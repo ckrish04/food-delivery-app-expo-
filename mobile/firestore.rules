@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function isVendor() {
+      return signedIn() && userDoc(request.auth.uid).data.role == "vendor";
+    }
+
+    function isCustomer() {
+      return signedIn() && userDoc(request.auth.uid).data.role == "customer";
+    }
+
+    function validUserProfile() {
+      return request.resource.data.keys().hasOnly([
+        "name",
+        "email",
+        "role",
+        "vendorCanteenKey",
+        "vendorCanteenName"
+      ]) &&
+      request.resource.data.name is string &&
+      request.resource.data.email is string &&
+      request.resource.data.role in ["customer", "vendor"];
+    }
+
+    function validAppDataDoc() {
+      return request.resource.data.keys().hasOnly(["orders"]) &&
+        request.resource.data.orders is list &&
+        request.resource.data.orders.size() <= 1000;
+    }
+
+    function validVendorOrdersDoc() {
+      return request.resource.data.keys().hasOnly(["orders"]) &&
+        request.resource.data.orders is list &&
+        request.resource.data.orders.size() <= 5000;
+    }
+
+    function validVendorMenuDoc() {
+      return request.resource.data.keys().hasOnly(["items"]) &&
+        request.resource.data.items is list &&
+        request.resource.data.items.size() <= 2000;
+    }
+
+    // Public user profile metadata - only owner can read/write.
+    match /users/{uid} {
+      allow read, create, update: if isOwner(uid) && validUserProfile();
+      allow delete: if false;
+    }
+
+    // Private app data per user (orders cache, etc).
+    match /users/{uid}/private/{docId} {
+      allow read, create, update: if isOwner(uid) && docId == "appData" && validAppDataDoc();
+      allow delete: if false;
+    }
+
+    // Shared vendor order feed used by vendor console.
+    // Read: vendors only. Write: customers only with controlled shape.
+    match /appData/vendorOrders {
+      allow read: if isVendor();
+      allow create, update: if isCustomer() && validVendorOrdersDoc();
+      allow delete: if false;
+    }
+
+    // Shared launched menu items by vendors. Readable to signed-in users.
+    match /appData/vendorMenu {
+      allow read: if signedIn();
+      allow create, update: if isVendor() && validVendorMenuDoc();
+      allow delete: if false;
+    }
+  }
+}
